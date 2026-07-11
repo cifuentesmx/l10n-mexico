@@ -1104,21 +1104,65 @@ class TestDownloadRequest(TransactionCase):
         )
         self.assertEqual(utc_naive_to_mx_naive(second.date_to).date(), end)
 
-    def test_handle_max_elements_single_day_error(self):
+    def test_handle_max_elements_single_day_splits_by_time(self):
         client = self._mock_client()
         client.request_download.return_value = {
             "cod_estatus": SAT_CODE_MAX_ELEMENTS,
             "sat_request_id": "",
             "message": "Too many",
         }
+        day = date(2026, 2, 1)
         req = self._create_request(
-            date_from=mx_naive_to_utc_naive(mx_day_start(date(2026, 2, 1))),
-            date_to=mx_naive_to_utc_naive(mx_day_end(date(2026, 2, 1))),
+            date_from=mx_naive_to_utc_naive(mx_day_start(day)),
+            date_to=mx_naive_to_utc_naive(mx_day_end(day)),
+        )
+        with self._patch_factory(client):
+            req._action_request()
+        self.assertEqual(req.state, "draft")
+        self.assertEqual(utc_naive_to_mx_naive(req.date_from).date(), day)
+        self.assertEqual(utc_naive_to_mx_naive(req.date_to).date(), day)
+        self.assertLess(req.date_to, mx_naive_to_utc_naive(mx_day_end(day)))
+        second = self.env["l10n_mx_sat.download.request"].search(
+            [
+                ("company_id", "=", self.company.id),
+                ("id", "!=", req.id),
+            ]
+        )
+        self.assertEqual(len(second), 1)
+        self.assertEqual(utc_naive_to_mx_naive(second.date_from).date(), day)
+        self.assertEqual(utc_naive_to_mx_naive(second.date_to).date(), day)
+        self.assertGreater(
+            utc_naive_to_mx_naive(second.date_from),
+            utc_naive_to_mx_naive(req.date_to),
+        )
+
+    def test_handle_max_elements_single_day_min_window_error(self):
+        client = self._mock_client()
+        client.request_download.return_value = {
+            "cod_estatus": SAT_CODE_MAX_ELEMENTS,
+            "sat_request_id": "",
+            "message": "Too many",
+        }
+        Request = self.env["l10n_mx_sat.download.request"]
+        req = Request.with_context(
+            l10n_mx_sat_skip_date_normalization=True
+        ).create(
+            {
+                "company_id": self.company.id,
+                "document_kind": "cfdi",
+                "direction": "received",
+                "request_type": "xml",
+                "date_from": mx_naive_to_utc_naive(
+                    datetime(2026, 2, 1, 0, 0, 0)
+                ),
+                "date_to": mx_naive_to_utc_naive(datetime(2026, 2, 1, 0, 30, 0)),
+                "state": "draft",
+            }
         )
         with self._patch_factory(client):
             req._action_request()
         self.assertEqual(req.state, "error")
-        self.assertIn("single calendar day", req.error_message)
+        self.assertIn("ventana minima", req.error_message)
 
     def test_build_fingerprint_from_string_dates(self):
         Request = self.env["l10n_mx_sat.download.request"]

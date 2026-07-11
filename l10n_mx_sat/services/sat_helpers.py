@@ -76,6 +76,8 @@ def sat_request_datetimes_for_send(date_from, date_to):
     """Return Mexico local naive datetimes for the SAT web service."""
     from_mx = utc_naive_to_mx_naive(date_from)
     to_mx = utc_naive_to_mx_naive(date_to)
+    if from_mx.date() == to_mx.date():
+        return from_mx, to_mx
     return mx_day_start(from_mx.date()), mx_day_end(to_mx.date())
 
 
@@ -107,5 +109,29 @@ def split_sat_request_range_by_days(date_from, date_to):
     second_range = (
         mx_naive_to_utc_naive(mx_day_start(second_start_day)),
         mx_naive_to_utc_naive(mx_day_end(to_day)),
+    )
+    return first_range, second_range
+
+
+def split_sat_request_range_single_day(date_from, date_to, min_delta_hours=1):
+    """Split a single Mexico calendar day UTC range by time midpoint."""
+    from_mx = utc_naive_to_mx_naive(date_from)
+    to_mx = utc_naive_to_mx_naive(date_to)
+    if from_mx.date() != to_mx.date():
+        return None
+
+    delta = to_mx - from_mx
+    min_delta = timedelta(hours=min_delta_hours)
+    if delta <= min_delta:
+        return None
+
+    mid = from_mx + (delta / 2)
+    first_range = (
+        mx_naive_to_utc_naive(from_mx),
+        mx_naive_to_utc_naive(mid),
+    )
+    second_range = (
+        mx_naive_to_utc_naive(mid + timedelta(seconds=1)),
+        mx_naive_to_utc_naive(to_mx),
     )
     return first_range, second_range

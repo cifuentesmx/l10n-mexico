@@ -18,6 +18,7 @@ from ..services.sat_helpers import (
     sat_request_datetimes_for_send,
     sat_str,
     split_sat_request_range_by_days,
+    split_sat_request_range_single_day,
     utc_naive_to_mx_naive,
 )
 
@@ -97,6 +98,13 @@ class TestSatHelpers(TransactionCase):
         self.assertEqual(send_from, datetime(2026, 2, 15, 0, 0, 0))
         self.assertEqual(send_to, datetime(2026, 2, 20, 23, 59, 59))
 
+    def test_sat_request_datetimes_for_send_keeps_same_day_partial_range(self):
+        date_from = mx_naive_to_utc_naive(datetime(2026, 2, 1, 0, 0, 0))
+        date_to = mx_naive_to_utc_naive(datetime(2026, 2, 1, 11, 59, 59))
+        send_from, send_to = sat_request_datetimes_for_send(date_from, date_to)
+        self.assertEqual(send_from, datetime(2026, 2, 1, 0, 0, 0))
+        self.assertEqual(send_to, datetime(2026, 2, 1, 11, 59, 59))
+
     def test_split_sat_request_range_by_days_returns_contiguous_ranges(self):
         date_from = mx_naive_to_utc_naive(mx_day_start(date(2026, 2, 1)))
         date_to = mx_naive_to_utc_naive(mx_day_end(date(2026, 2, 10)))
@@ -115,3 +123,26 @@ class TestSatHelpers(TransactionCase):
         date_from = mx_naive_to_utc_naive(mx_day_start(date(2026, 2, 1)))
         date_to = mx_naive_to_utc_naive(mx_day_end(date(2026, 2, 1)))
         self.assertIsNone(split_sat_request_range_by_days(date_from, date_to))
+
+    def test_split_sat_request_range_single_day_returns_partial_ranges(self):
+        date_from = mx_naive_to_utc_naive(mx_day_start(date(2026, 2, 1)))
+        date_to = mx_naive_to_utc_naive(mx_day_end(date(2026, 2, 1)))
+        split_ranges = split_sat_request_range_single_day(date_from, date_to)
+        self.assertIsNotNone(split_ranges)
+        (first_from, first_to), (second_from, second_to) = split_ranges
+        self.assertEqual(utc_naive_to_mx_naive(first_from).date(), date(2026, 2, 1))
+        self.assertEqual(utc_naive_to_mx_naive(first_to).date(), date(2026, 2, 1))
+        self.assertEqual(
+            utc_naive_to_mx_naive(second_from).date(),
+            date(2026, 2, 1),
+        )
+        self.assertEqual(utc_naive_to_mx_naive(second_to).date(), date(2026, 2, 1))
+        self.assertGreater(
+            utc_naive_to_mx_naive(second_from),
+            utc_naive_to_mx_naive(first_to),
+        )
+
+    def test_split_sat_request_range_single_day_rejects_min_window(self):
+        date_from = mx_naive_to_utc_naive(datetime(2026, 2, 1, 0, 0, 0))
+        date_to = mx_naive_to_utc_naive(datetime(2026, 2, 1, 0, 30, 0))
+        self.assertIsNone(split_sat_request_range_single_day(date_from, date_to))

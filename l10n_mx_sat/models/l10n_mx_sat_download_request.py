@@ -24,6 +24,7 @@ from ..services import (
     SAT_DOWNLOAD_EXPIRED,
     SAT_DOWNLOAD_MAX_REACHED,
     SAT_METADATA_DEFAULT_WINDOW_DAYS,
+    SAT_METADATA_MIN_WINDOW_HOURS,
     SAT_REJECT_CODES,
     SAT_REQUEST_STATUS_ACCEPTED,
     SAT_REQUEST_STATUS_ERROR,
@@ -43,6 +44,7 @@ from ..services.sat_helpers import (
     normalize_sat_request_range_to_utc,
     sat_request_datetimes_for_send,
     split_sat_request_range_by_days,
+    split_sat_request_range_single_day,
     utc_naive_to_mx_naive,
 )
 from ..services.sat_metadata import (
@@ -230,10 +232,11 @@ class L10nMxSatDownloadRequest(models.Model):
     @api.model_create_multi
     def create(self, vals_list):
         for vals in vals_list:
-            if vals.get("date_from") and vals.get("date_to"):
-                vals["date_from"], vals["date_to"] = self._normalize_request_dates(
-                    vals["date_from"], vals["date_to"]
-                )
+            if not self.env.context.get("l10n_mx_sat_skip_date_normalization"):
+                if vals.get("date_from") and vals.get("date_to"):
+                    vals["date_from"], vals["date_to"] = self._normalize_request_dates(
+                        vals["date_from"], vals["date_to"]
+                    )
             if not vals.get("request_fingerprint"):
                 vals["request_fingerprint"] = self._build_fingerprint_from_vals(vals)
             if self.search(
@@ -248,7 +251,10 @@ class L10nMxSatDownloadRequest(models.Model):
         return super().create(vals_list)
 
     def write(self, vals):
-        if "date_from" in vals or "date_to" in vals:
+        if (
+            not self.env.context.get("l10n_mx_sat_skip_date_normalization")
+            and ("date_from" in vals or "date_to" in vals)
+        ):
             for rec in self:
                 rec_vals = dict(vals)
                 date_from, date_to = rec._normalize_request_dates(
@@ -482,24 +488,29 @@ class L10nMxSatDownloadRequest(models.Model):
         self._write_request_error(cod_estatus, message)
 
     def _handle_max_elements_exceeded(self):
-        """Split request window on SAT 5003 using full Mexico calendar days."""
+        """Split request window on SAT 5003 using full days or time within one day."""
         self.ensure_one()
         split_ranges = split_sat_request_range_by_days(self.date_from, self.date_to)
+        if split_ranges is None:
+            split_ranges = split_sat_request_range_single_day(
+                self.date_from,
+                self.date_to,
+                min_delta_hours=SAT_METADATA_MIN_WINDOW_HOURS,
+            )
         if not split_ranges:
             self.write(
                 {
                     "state": "error",
                     "error_message": self.env._(
-                        "SAT: maximum number of records exceeded for a single "
-                        "calendar day. Narrow the date range manually or split "
-                        "across multiple requests."
+                        "SAT: maximum number of records exceeded even with "
+                        "ventana minima. Revise manualmente."
                     ),
                 }
             )
             return
 
         (first_from, first_to), (second_from, second_to) = split_ranges
-        self.write(
+        self.with_context(l10n_mx_sat_skip_date_normalization=True).write(
             {
                 "date_from": first_from,
                 "date_to": first_to,
@@ -535,7 +546,7 @@ class L10nMxSatDownloadRequest(models.Model):
             limit=1,
         )
         if not second_half:
-            self.create(
+            self.with_context(l10n_mx_sat_skip_date_normalization=True).create(
                 {
                     "company_id": self.company_id.id,
                     "document_kind": self.document_kind,
