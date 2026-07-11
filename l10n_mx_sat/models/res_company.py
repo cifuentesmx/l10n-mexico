@@ -267,6 +267,18 @@ class ResCompany(models.Model):
             "context": {"default_company_id": self.id},
         }
 
+    def action_l10n_mx_sat_open_cfdi_upload_wizard(self):
+        """Open wizard to upload CFDI XML files manually."""
+        self.ensure_one()
+        return {
+            "type": "ir.actions.act_window",
+            "name": self.env._("Upload CFDI"),
+            "res_model": "l10n_mx_sat.cfdi.upload.wizard",
+            "view_mode": "form",
+            "target": "new",
+            "context": {"default_company_id": self.id},
+        }
+
     def l10n_mx_sat_test_connection(self):
         """Button to test the SAT connection."""
         self.ensure_one()

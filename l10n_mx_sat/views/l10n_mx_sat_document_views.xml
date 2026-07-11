@@ -5,6 +5,16 @@
         <field name="model">l10n_mx_sat.document</field>
         <field name="arch" type="xml">
             <list create="0" edit="0" delete="0">
+                <header>
+                    <button
+                        name="%(l10n_mx_sat.l10n_mx_sat_cfdi_upload_wizard_action)d"
+                        type="action"
+                        string="Upload CFDI"
+                        class="btn-primary"
+                        groups="l10n_mx_sat.group_sat_manager"
+                        display="always"
+                    />
+                </header>
                 <field name="uuid" readonly="1" />
                 <field
                     name="company_id"

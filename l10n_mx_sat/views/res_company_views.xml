@@ -104,6 +104,14 @@
                                 icon="fa-refresh"
                                 groups="l10n_mx_sat.group_sat_manager"
                             />
+                            <button
+                                name="action_l10n_mx_sat_open_cfdi_upload_wizard"
+                                type="object"
+                                string="Upload CFDI"
+                                class="btn-secondary"
+                                icon="fa-upload"
+                                groups="l10n_mx_sat.group_sat_manager"
+                            />
                         </group>
                     </group>
                     <group string="Tipos de descarga">

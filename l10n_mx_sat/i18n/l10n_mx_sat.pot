@@ -855,6 +855,11 @@ msgid "Upload the FIEL private key (.key) first."
 msgstr ""
 
 #. module: l10n_mx_sat
+#: model:ir.model.fields,field_description:l10n_mx_sat.field_l10n_mx_sat_document__used_by_module
+msgid "Used by module"
+msgstr ""
+
+#. module: l10n_mx_sat
 #: model:ir.model.fields,field_description:l10n_mx_sat.field_l10n_mx_sat_document__uuid
 msgid "UUID"
 msgstr ""

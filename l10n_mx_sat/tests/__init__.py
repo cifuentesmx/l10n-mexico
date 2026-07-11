@@ -1,6 +1,7 @@
 # Copyright 2026 Gray Matter Logic
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl.html).
 
+from . import test_cfdi_upload_wizard
 from . import test_download_request
 from . import test_fiel_credentials_wizard
 from . import test_sat_client

@@ -61,6 +61,7 @@ class L10nMxSatDocument(models.Model):
         index=True,
         readonly=True,
     )
+    used_by_module = fields.Char(string="Used by module", readonly=True)
     voucher_type = fields.Char(string="Voucher type", readonly=True, index=True)
     issuer_rfc = fields.Char(string="Issuer RFC", readonly=True, index=True)
     issuer_name = fields.Char(string="Issuer name", readonly=True)
