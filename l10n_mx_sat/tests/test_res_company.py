@@ -2,6 +2,7 @@
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl.html).
 
 import base64
+from datetime import date
 from unittest.mock import MagicMock, patch
 
 from odoo.exceptions import UserError
@@ -10,6 +11,7 @@ from odoo.tests.common import TransactionCase
 from odoo.tools import mute_logger
 
 from ..services import SatClient
+from ..services.sat_helpers import mx_day_end, mx_day_start, mx_naive_to_utc_naive
 
 MOCK_CER = base64.b64encode(b"fake-cer-content")
 MOCK_KEY = base64.b64encode(b"fake-key-content")
@@ -302,8 +304,8 @@ class TestResCompanySATConnection(TransactionCase):
                 "document_kind": "cfdi",
                 "direction": "received",
                 "request_type": "xml",
-                "date_from": "2026-01-01 00:00:00",
-                "date_to": "2026-01-31 23:59:59",
+                "date_from": mx_naive_to_utc_naive(mx_day_start(date(2026, 1, 1))),
+                "date_to": mx_naive_to_utc_naive(mx_day_end(date(2026, 1, 31))),
             }
         )
 

@@ -3,7 +3,7 @@
 
 import base64
 import zipfile
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from io import BytesIO
 from unittest.mock import MagicMock, patch
 
@@ -27,6 +27,12 @@ from odoo.addons.l10n_mx_sat.services import (
     SAT_REQUEST_STATUS_PROCESSING,
     SAT_REQUEST_STATUS_READY,
     SAT_REQUEST_STATUS_REJECTED,
+)
+from odoo.addons.l10n_mx_sat.services.sat_helpers import (
+    mx_day_end,
+    mx_day_start,
+    mx_naive_to_utc_naive,
+    utc_naive_to_mx_naive,
 )
 from odoo.addons.l10n_mx_sat.services.sat_metadata import (
     build_request_fingerprint,
@@ -96,8 +102,8 @@ class TestDownloadRequest(TransactionCase):
             "document_kind": "cfdi",
             "direction": "received",
             "request_type": "xml",
-            "date_from": "2026-02-01 00:00:00",
-            "date_to": "2026-02-28 23:59:59",
+            "date_from": mx_naive_to_utc_naive(mx_day_start(date(2026, 2, 1))),
+            "date_to": mx_naive_to_utc_naive(mx_day_end(date(2026, 2, 28))),
             "state": "draft",
         }
         vals.update(kwargs)
@@ -1015,7 +1021,90 @@ class TestDownloadRequest(TransactionCase):
         self.assertEqual(req.state, "requested")
         self.assertEqual(req.sat_request_id, "SOL-ACEP")
 
-    def test_handle_max_elements_min_window_error(self):
+    def test_create_normalizes_partial_dates_to_full_mx_days(self):
+        req = self._create_request(
+            date_from="2026-02-15 14:30:00",
+            date_to="2026-02-20 10:00:00",
+        )
+        self.assertEqual(
+            utc_naive_to_mx_naive(req.date_from),
+            mx_day_start(date(2026, 2, 15)),
+        )
+        self.assertEqual(
+            utc_naive_to_mx_naive(req.date_to),
+            mx_day_end(date(2026, 2, 20)),
+        )
+
+    def test_action_request_sends_mx_day_boundaries(self):
+        client = self._mock_client()
+        client.request_download.return_value = {
+            "cod_estatus": SAT_CODE_SUCCESS,
+            "sat_request_id": "SOL-FULL-DAY",
+            "message": "Solicitud aceptada",
+        }
+        req = self._create_request(
+            date_from="2026-02-15 14:30:00",
+            date_to="2026-02-20 10:00:00",
+        )
+        with self._patch_factory(client):
+            req._action_request()
+        client.request_download.assert_called_once()
+        args = client.request_download.call_args[0]
+        self.assertEqual(args[2], datetime(2026, 2, 15, 0, 0, 0))
+        self.assertEqual(args[3], datetime(2026, 2, 20, 23, 59, 59))
+
+    def test_create_next_request_chains_full_mx_days(self):
+        Request = self.env["l10n_mx_sat.download.request"]
+        Request.search([("company_id", "=", self.company.id)]).unlink()
+        self._create_request(
+            date_from=mx_naive_to_utc_naive(mx_day_start(date(2026, 2, 1))),
+            date_to=mx_naive_to_utc_naive(mx_day_end(date(2026, 2, 10))),
+            state="done",
+        )
+        req = Request._create_next_request(
+            self.company, "cfdi", "received", "xml"
+        )
+        self.assertTrue(req)
+        self.assertEqual(
+            req.date_from,
+            mx_naive_to_utc_naive(mx_day_start(date(2026, 2, 11))),
+        )
+
+    def test_handle_max_elements_splits_by_full_days(self):
+        client = self._mock_client()
+        client.request_download.return_value = {
+            "cod_estatus": SAT_CODE_MAX_ELEMENTS,
+            "sat_request_id": "",
+            "message": "Too many",
+        }
+        start = date(2026, 2, 1)
+        end = date(2026, 2, 10)
+        req = self._create_request(
+            date_from=mx_naive_to_utc_naive(mx_day_start(start)),
+            date_to=mx_naive_to_utc_naive(mx_day_end(end)),
+        )
+        with self._patch_factory(client):
+            req._action_request()
+        self.assertEqual(req.state, "draft")
+        self.assertEqual(utc_naive_to_mx_naive(req.date_from).date(), start)
+        self.assertEqual(
+            utc_naive_to_mx_naive(req.date_to).date(),
+            date(2026, 2, 5),
+        )
+        second = self.env["l10n_mx_sat.download.request"].search(
+            [
+                ("company_id", "=", self.company.id),
+                ("id", "!=", req.id),
+            ]
+        )
+        self.assertEqual(len(second), 1)
+        self.assertEqual(
+            utc_naive_to_mx_naive(second.date_from).date(),
+            date(2026, 2, 6),
+        )
+        self.assertEqual(utc_naive_to_mx_naive(second.date_to).date(), end)
+
+    def test_handle_max_elements_single_day_error(self):
         client = self._mock_client()
         client.request_download.return_value = {
             "cod_estatus": SAT_CODE_MAX_ELEMENTS,
@@ -1023,13 +1112,13 @@ class TestDownloadRequest(TransactionCase):
             "message": "Too many",
         }
         req = self._create_request(
-            date_from="2026-02-01 00:00:00",
-            date_to="2026-02-01 00:30:00",
+            date_from=mx_naive_to_utc_naive(mx_day_start(date(2026, 2, 1))),
+            date_to=mx_naive_to_utc_naive(mx_day_end(date(2026, 2, 1))),
         )
         with self._patch_factory(client):
             req._action_request()
         self.assertEqual(req.state, "error")
-        self.assertIn("ventana minima", req.error_message)
+        self.assertIn("single calendar day", req.error_message)
 
     def test_build_fingerprint_from_string_dates(self):
         Request = self.env["l10n_mx_sat.download.request"]

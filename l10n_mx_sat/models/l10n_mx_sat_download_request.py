@@ -24,7 +24,6 @@ from ..services import (
     SAT_DOWNLOAD_EXPIRED,
     SAT_DOWNLOAD_MAX_REACHED,
     SAT_METADATA_DEFAULT_WINDOW_DAYS,
-    SAT_METADATA_MIN_WINDOW_HOURS,
     SAT_REJECT_CODES,
     SAT_REQUEST_STATUS_ACCEPTED,
     SAT_REQUEST_STATUS_ERROR,
@@ -36,6 +35,15 @@ from ..services import (
     SAT_STATUS_CODE_LABELS,
     sat_int,
     sat_str,
+)
+from ..services.sat_helpers import (
+    mx_day_end,
+    mx_day_start,
+    mx_naive_to_utc_naive,
+    normalize_sat_request_range_to_utc,
+    sat_request_datetimes_for_send,
+    split_sat_request_range_by_days,
+    utc_naive_to_mx_naive,
 )
 from ..services.sat_metadata import (
     build_request_fingerprint,
@@ -177,8 +185,16 @@ class L10nMxSatDownloadRequest(models.Model):
             kind = kind_labels.get(rec.document_kind, "?")
             direction = direction_labels.get(rec.direction, "?")
             req_type = type_labels.get(rec.request_type, "?")
-            fi = rec.date_from.strftime("%Y-%m-%d") if rec.date_from else "?"
-            ff = rec.date_to.strftime("%Y-%m-%d") if rec.date_to else "?"
+            fi = (
+                utc_naive_to_mx_naive(rec.date_from).strftime("%Y-%m-%d")
+                if rec.date_from
+                else "?"
+            )
+            ff = (
+                utc_naive_to_mx_naive(rec.date_to).strftime("%Y-%m-%d")
+                if rec.date_to
+                else "?"
+            )
             rec.name = f"{rfc} / {kind} / {direction} / {req_type} / {fi} - {ff}"
 
     @api.model
@@ -192,9 +208,32 @@ class L10nMxSatDownloadRequest(models.Model):
                 rfc = False
         return rfc or company.name or "?"
 
+    @api.model
+    def _parse_request_datetime(self, value):
+        if isinstance(value, str):
+            return fields.Datetime.to_datetime(value)
+        return value
+
+    @api.model
+    def _normalize_request_dates(self, date_from, date_to):
+        date_from = self._parse_request_datetime(date_from)
+        date_to = self._parse_request_datetime(date_to)
+        if not date_from or not date_to:
+            return date_from, date_to
+        date_from, date_to = normalize_sat_request_range_to_utc(date_from, date_to)
+        if date_from > date_to:
+            raise ValidationError(
+                self.env._("The start date must be before or equal to the end date.")
+            )
+        return date_from, date_to
+
     @api.model_create_multi
     def create(self, vals_list):
         for vals in vals_list:
+            if vals.get("date_from") and vals.get("date_to"):
+                vals["date_from"], vals["date_to"] = self._normalize_request_dates(
+                    vals["date_from"], vals["date_to"]
+                )
             if not vals.get("request_fingerprint"):
                 vals["request_fingerprint"] = self._build_fingerprint_from_vals(vals)
             if self.search(
@@ -207,6 +246,29 @@ class L10nMxSatDownloadRequest(models.Model):
                     )
                 )
         return super().create(vals_list)
+
+    def write(self, vals):
+        if "date_from" in vals or "date_to" in vals:
+            for rec in self:
+                rec_vals = dict(vals)
+                date_from, date_to = rec._normalize_request_dates(
+                    rec_vals.get("date_from", rec.date_from),
+                    rec_vals.get("date_to", rec.date_to),
+                )
+                rec_vals["date_from"] = date_from
+                rec_vals["date_to"] = date_to
+                if rec.state in ("draft", "error"):
+                    rec_vals["request_fingerprint"] = build_request_fingerprint(
+                        rec_vals.get("company_id", rec.company_id.id),
+                        rec_vals.get("document_kind", rec.document_kind),
+                        rec_vals.get("direction", rec.direction),
+                        rec_vals.get("request_type", rec.request_type),
+                        date_from,
+                        date_to,
+                    )
+                super(L10nMxSatDownloadRequest, rec).write(rec_vals)
+            return True
+        return super().write(vals)
 
     @api.model
     def _build_fingerprint_from_vals(self, vals):
@@ -346,11 +408,14 @@ class L10nMxSatDownloadRequest(models.Model):
         token = client.authenticate()
         rfc = company.l10n_mx_sat_get_rfc(client)
 
+        send_from, send_to = sat_request_datetimes_for_send(
+            self.date_from, self.date_to
+        )
         result = client.request_download(
             token,
             rfc,
-            self.date_from.replace(tzinfo=None),
-            self.date_to.replace(tzinfo=None),
+            send_from,
+            send_to,
             document_kind=self.document_kind,
             direction=self.direction,
             request_type=self.request_type,
@@ -417,35 +482,35 @@ class L10nMxSatDownloadRequest(models.Model):
         self._write_request_error(cod_estatus, message)
 
     def _handle_max_elements_exceeded(self):
-        """Split request window on SAT 5003 (metadata/XML volume limit)."""
+        """Split request window on SAT 5003 using full Mexico calendar days."""
         self.ensure_one()
-        delta = self.date_to - self.date_from
-        min_delta = timedelta(hours=SAT_METADATA_MIN_WINDOW_HOURS)
-        if delta <= min_delta:
+        split_ranges = split_sat_request_range_by_days(self.date_from, self.date_to)
+        if not split_ranges:
             self.write(
                 {
                     "state": "error",
                     "error_message": self.env._(
-                        "SAT: maximum number of records exceeded even with "
-                        "ventana minima. Revise manualmente."
+                        "SAT: maximum number of records exceeded for a single "
+                        "calendar day. Narrow the date range manually or split "
+                        "across multiple requests."
                     ),
                 }
             )
             return
 
-        mid = self.date_from + (delta / 2)
-        # Current request covers first half; create second half if not duplicate.
+        (first_from, first_to), (second_from, second_to) = split_ranges
         self.write(
             {
-                "date_to": mid,
+                "date_from": first_from,
+                "date_to": first_to,
                 "state": "draft",
                 "request_fingerprint": build_request_fingerprint(
                     self.company_id.id,
                     self.document_kind,
                     self.direction,
                     self.request_type,
-                    self.date_from,
-                    mid,
+                    first_from,
+                    first_to,
                 ),
                 "error_message": self.env._(
                     "Window automatically reduced due to SAT 5003."
@@ -462,8 +527,8 @@ class L10nMxSatDownloadRequest(models.Model):
                         self.document_kind,
                         self.direction,
                         self.request_type,
-                        mid + timedelta(seconds=1),
-                        self.date_to,
+                        second_from,
+                        second_to,
                     ),
                 )
             ],
@@ -476,8 +541,8 @@ class L10nMxSatDownloadRequest(models.Model):
                     "document_kind": self.document_kind,
                     "direction": self.direction,
                     "request_type": self.request_type,
-                    "date_from": mid + timedelta(seconds=1),
-                    "date_to": self.date_to,
+                    "date_from": second_from,
+                    "date_to": second_to,
                     "state": "draft",
                 }
             )
@@ -1089,9 +1154,11 @@ class L10nMxSatDownloadRequest(models.Model):
 
         sync_from = self._get_sync_from_date(company, request_type)
         if last_done:
-            date_from = last_done.date_to + timedelta(seconds=1)
+            last_to_day = utc_naive_to_mx_naive(last_done.date_to).date()
+            next_day = last_to_day + timedelta(days=1)
+            date_from = mx_naive_to_utc_naive(mx_day_start(next_day))
         elif sync_from:
-            date_from = datetime.combine(sync_from, datetime.min.time())
+            date_from = mx_naive_to_utc_naive(mx_day_start(sync_from))
         else:
             mx_now = datetime.now(MX_TZ)
             days = (
@@ -1099,22 +1166,19 @@ class L10nMxSatDownloadRequest(models.Model):
                 if request_type == "metadata"
                 else SAT_DEFAULT_SYNC_DAYS
             )
-            date_from = (mx_now - timedelta(days=days)).replace(
-                hour=0, minute=0, second=0, tzinfo=None
-            )
+            start_day = (mx_now - timedelta(days=days)).date()
+            date_from = mx_naive_to_utc_naive(mx_day_start(start_day))
 
         mx_now = datetime.now(MX_TZ)
-        date_to = (mx_now - timedelta(days=1)).replace(
-            hour=23, minute=59, second=59, tzinfo=None
-        )
-
-        if hasattr(date_from, "tzinfo") and date_from.tzinfo:
-            date_from = date_from.replace(tzinfo=None)
+        from_day = utc_naive_to_mx_naive(date_from).date()
+        end_day = (mx_now - timedelta(days=1)).date()
 
         if request_type == "metadata" and not last_done:
-            window_end = date_from + timedelta(days=SAT_METADATA_DEFAULT_WINDOW_DAYS)
-            if window_end < date_to:
-                date_to = window_end.replace(hour=23, minute=59, second=59)
+            cap_day = from_day + timedelta(days=SAT_METADATA_DEFAULT_WINDOW_DAYS)
+            if cap_day < end_day:
+                end_day = cap_day
+
+        date_to = mx_naive_to_utc_naive(mx_day_end(end_day))
 
         if date_from >= date_to:
             return self.browse()

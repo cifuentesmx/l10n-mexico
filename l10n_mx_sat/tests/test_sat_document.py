@@ -1,6 +1,7 @@
 # Copyright 2026 Gray Matter Logic
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl.html).
 
+from datetime import date
 from unittest.mock import MagicMock, patch
 
 from lxml import etree
@@ -9,7 +10,12 @@ from odoo.tests import tagged
 from odoo.tests.common import TransactionCase
 from odoo.tools import mute_logger
 
-from odoo.addons.l10n_mx_sat.services.sat_helpers import SAFE_XML_PARSER
+from odoo.addons.l10n_mx_sat.services.sat_helpers import (
+    SAFE_XML_PARSER,
+    mx_day_end,
+    mx_day_start,
+    mx_naive_to_utc_naive,
+)
 
 _PATCH_GET_CLIENT = (
     "odoo.addons.l10n_mx_sat.models.res_company.ResCompany." "l10n_mx_sat_get_client"
@@ -43,8 +49,8 @@ class TestSatDocument(TransactionCase):
             "document_kind": "cfdi",
             "direction": "received",
             "request_type": "xml",
-            "date_from": "2026-02-01 00:00:00",
-            "date_to": "2026-02-28 23:59:59",
+            "date_from": mx_naive_to_utc_naive(mx_day_start(date(2026, 2, 1))),
+            "date_to": mx_naive_to_utc_naive(mx_day_end(date(2026, 2, 28))),
             "state": "done",
         }
         vals.update(kwargs)
